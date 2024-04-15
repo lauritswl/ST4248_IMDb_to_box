@@ -2,3 +2,12 @@
 .Rhistory
 .RData
 .Ruserdata
+Data/IMDb/name.basics.tsv
+Data/IMDb/title.akas.tsv
+Data/IMDb/title.basics.tsv
+Data/IMDb/title.crew.tsv
+Data/IMDb/title.episode.tsv
+Data/IMDb/title.principals.tsv
+Data/IMDb/title.ratings.tsv
+Data/meta_moviedata.csv
+Data/revenues_per_day_with_duplicate_tID.csv
