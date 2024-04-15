@@ -1,0 +1,169 @@
+# Import reviews:
+```{r}
+pacman::p_load(tidyverse, rvest)
+```
+
+```{r}
+
+DF.title.basics<- read.delim(file = '../Data/IMDb/title.basics.tsv')
+DF.title.crew<-   read.delim(file = '../Data/IMDb/title.crew.tsv') %>% 
+  select(tconst, directors)
+DF.title.rating<- read.delim(file = '../Data/IMDb/title.ratings.tsv')
+
+```
+# Aggregating BoxOffice to to avoid time series.
+```{r}
+DF.BoxOffice <- read.delim(file = "../Data/revenues_per_day.csv", sep = ",")
+DF.BoxOffice.RevenueSum.Title <- DF.BoxOffice %>%
+  group_by(title) %>%
+  summarise(total_revenue = sum(revenue),
+            total_theaters = sum(theaters),
+            min_date = min(date)) %>%
+  mutate(revenue_pr_theater = round(total_revenue/total_theaters)) %>% 
+  arrange(desc(total_revenue)) %>%
+  mutate("Year" = year(min_date))
+```
+
+```{r}
+DF.Merge<- merge(x = DF.BoxOffice.RevenueSum.Title,
+      y = DF.title.basics, 
+      by.x =  'title', 
+      by.y = 'primaryTitle')
+
+DF.BoxOffice.with.tID<-merge(x = DF.BoxOffice, 
+                             y= DF.title.basics, 
+                             by.x = 'title', 
+                             by.y = 'primaryTitle')
+
+write.csv(DF.BoxOffice.with.tID, file = "../Data/revenues_per_day_with_duplicate_tID.csv")
+
+DF.BoxOffice.with.tID
+
+
+
+
+```
+
+
+
+
+
+```{r}
+DF.BoxOffice.RevenueSum.Date <- DF.BoxOffice %>%
+  group_by(date) %>%
+  summarise(total_revenue = sum(revenue)) %>% 
+  mutate(date = as.Date(date))
+head(DF.BoxOffice.RevenueSum.Date)
+
+pacman::p_load(lubridate)
+DF.BoxOffice.RevenueSum.Month <- DF.BoxOffice.RevenueSum.Date %>% 
+  group_by(month = floor_date(date, unit = "month")) %>%
+  summarise(total_revenue = mean(total_revenue)) 
+
+# Plot the time series data
+ggplot(DF.BoxOffice.RevenueSum.Month, aes(x = month, y = total_revenue)) +
+  geom_line() +
+  scale_x_date(date_breaks = "6 month", date_labels = '%b %Y') +
+  labs(title = "Time Series Data", x = "Date", y = "Value") +
+  theme_minimal()+
+   theme(axis.text.x = element_text(angle = 70, hjust = 1))
+```
+**The drop in 2019 is assumed to be from covid-19**
+
+```{r}
+DF.BoxOffice %>% 
+  filter(date == '2023-07-21')
+```
+
+
+
+## Merge IMDb onto titles we box-office data for:
+```{r}
+# Too many missclasifications without, better with less data
+DF.title.basics <- DF.title.basics %>% 
+  filter(titleType == 'movie')
+
+col_selct <- c("min_date", "tconst", "title","runtimeMinutes", "genres", "total_revenue", "total_theaters")
+
+# Filter
+DF.Merge<- merge(x = DF.BoxOffice.RevenueSum.Title,
+      y = DF.title.basics, 
+      by.x =  'title', 
+      by.y = 'primaryTitle')%>% 
+  filter(startYear == Year) %>%  # Avoid talking about a re-run or another movie of same name.
+  mutate(runtimeMinutes = as.integer(runtimeMinutes),
+         genres = ifelse((genres == '\\N'), yes = NA, no =  genres)) %>% # Transform \\N to NA's for genres and runtimeMinutes
+  select(all_of(col_selct)) # Select needed rows
+
+head(DF.Merge,n = 10)
+```
+
+# Dummy variables of genre:
+```{r}
+# Split the genre strings into separate genres
+genres_list <- strsplit(as.character(DF.Merge$genres), ",")
+
+# Get unique genres
+unique_genres <- unique(unlist(genres_list)) %>% 
+  na.omit()
+
+
+# Create dummy variables for each unique genre
+for (genre in unique_genres) {
+  DF.Merge[[genre]] <- sapply(genres_list, function(x) as.numeric(genre %in% x))
+}
+# Remove 'genre' column
+DF.Merge <- DF.Merge[, !colnames(DF.Merge) %in% c('genres')]
+
+DF.Merge
+```
+
+```{r}
+# Add director and raiting
+# Director
+DF.Merge<- merge(
+  x = DF.Merge,
+  y = DF.title.crew, 
+      by = 'tconst')
+
+
+# Rating
+DF.Merge<- merge(
+  x = DF.Merge,
+  y = DF.title.rating, 
+      by = 'tconst')
+
+
+DF.Merge
+```
+
+# Dummy variables of director:
+## It seems that XGBoost has an built in categorical encdoning that outperforms one-hot
+# ```{r}
+# # Split the directors strings into separate directors
+# directors_list <- strsplit(as.character(DF.Merge$directors), ",")
+# # Get unique directors
+# unique_directors <- unique(unlist(directors_list))
+# # Create dummy variables for each unique genre
+# for (directors in unique_directors) {
+#   DF.Merge[[directors]] <- sapply(directors_list, function(x) as.numeric(directors %in% x))
+# }
+# # Remove 'directors' column
+# DF.Merge <- DF.Merge[, !colnames(DF.Merge) %in% c('directors')]
+# rm( directors, directors_list, unique_directors)
+# ```
+
+
+
+
+# Write CSV
+```{r}
+write_csv(DF.Merge, file = "../Data/meta_moviedata.csv")
+DF.Merge
+rm(DF.title.basics, DF.title.crew, DF.title.rating, genres_list, col_selct, genre unique_genres) # Clean up environment
+```
+
+
+
+
+

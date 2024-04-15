@@ -1,0 +1,387 @@
+# Install packages:
+```{r}
+pacman::p_load(
+  tidyverse,
+  brms,
+  patchwork,
+  tidymodels,
+  parsnip
+)
+pacman::p_load(
+  visdat,
+  doParallel,
+  knitr,
+  kableExtra,
+  factoextra,
+  pracma,
+  vip
+)
+
+#Parallelisation
+require(doParallel)
+cores <- parallel::detectCores(logical = FALSE)
+registerDoParallel(cores = cores)
+```
+
+# Load data
+## Base meta-datasets
+```{r}
+# Load dataset and adapt for xgboost
+DF.BoxOffice <- read_csv(file = "../Data/meta_moviedata.csv") %>%
+  select(-title) %>% 
+  mutate(directors = as.factor(gsub(",.*$", "", directors))) %>% # Only use the first director
+  mutate(release_year = lubridate::year(min_date),
+         release_year_month = format(min_date, "%Y-%m"),
+         release_week = week(min_date))
+
+DF.Timeseries.Merge <- read_csv(file = "../Data/Timeseries_Revenue.csv")
+
+DF.Basic <- merge(x = DF.BoxOffice, y = DF.Timeseries.Merge, by.x = "min_date", by.y = "date") %>%  #Merge
+  filter(release_year != 2000) %>%  # Make sure we have time_series data for all elements #removes 75 elements 
+  select( -...1, - release_year_month, -min_date, -revenue, -directors) %>% 
+  select(total_revenue, total_theaters,everything())
+rm(DF.BoxOffice, DF.Timeseries.Merge)
+
+## Remove ratings
+DF.NoRating <- DF.Basic %>%
+  select(-averageRating, -numVotes)
+```
+
+
+```{r}
+DF.Basic[,1:30] %>% visdat::vis_dat()
+rethinking::precis(DF.Basic[,1:30])
+max(DF.Basic$total_revenue)
+
+```
+
+## Split in training and testing:
+
+
+
+
+
+
+
+
+```{r}
+fit.xgboost <- function(input_data){
+
+  set.seed(777)
+  # split data into training and test
+  split <- function(input_data){
+    sample <- sample(c(TRUE, FALSE), nrow(input_data), replace=TRUE, prob=c(0.8,0.2))
+    train  <- input_data[sample, ]
+    test   <- input_data[!sample, ]
+    return(list(Training = train, Testing = test))
+  }
+  data.split <- split(input_data)
+  
+  # Create crossvalidation folds:
+  myRecipe<- recipes::recipe(total_revenue ~ ., data=data.split$Training) %>% 
+    recipes::step_rm(tconst) %>%
+    prep()
+  
+  proc_TrainSet <- myRecipe %>% bake(data.split$Training)
+  cvFolds <- data.split$Training %>% 
+    bake(myRecipe, new_data = .) %>%
+    rsample::vfold_cv(v = 5)
+  
+  # Define model:
+  xgmodel <-parsnip::boost_tree(
+    mode = "regression",
+    trees = 1000, #nrounds
+    learn_rate = tune(), #eta
+    sample_size = tune(), #subsample
+    mtry = tune(), #colsample_bytree
+    min_n = tune(), #min_child_weight
+    tree_depth = tune() #max_depth
+    ) %>%
+    set_engine("xgboost", objective = "reg:squarederror",
+               lambda=0, alpha=1,verbose=2)
+  
+  # Define parameter distributions
+  xgboostParams <- dials::parameters(
+    min_n(),
+    tree_depth(),
+    learn_rate(c(-3, -1)),
+    finalize(mtry(),select(data.split$Training,-total_revenue)),
+    sample_size = sample_prop(c(0.4, 0.9))
+  )
+  
+  # Create a grid of parameter combinations to fit through:
+  xgGrid <- dials::grid_max_entropy(xgboostParams, size = 100)
+  
+  # Create a workflow of how to fit the model
+  xgWorkflow <- workflows::workflow() %>%
+    add_model(xgmodel) %>% 
+    add_formula(total_revenue ~ .)
+  
+  # Fit and crossvalidate all models:
+  xgTuned <- tune_grid(
+    object = xgWorkflow,
+    resamples = cvFolds,
+    grid      = xgGrid,
+    metrics   = metric_set(rmse, rsq, rsq_trad, mae, mpe, mape, smape, mase, ccc),
+    control   = control_grid(verbose = TRUE))
+  xgTuned %>% tune::show_best(metric = "rmse")
+  return_object <- list(data = data.split, tuned_object = xgTuned)
+}
+```
+
+## Fit basic:
+```{r}
+Basic.fit <- fit.xgboost(DF.Basic)
+Basic.fit$tuned_object %>%
+  tune::show_best(metric = "rmse",n = 100)
+basic.fit$tuned_object %>%
+  tune::show_best(metric = "rmse",n = 100)
+saveRDS(Basic.fit, file = "../Models/BasicFit.RData")
+```
+
+## Fit NoRating:
+```{r}
+# Fits 100 parameters with 5cv is 16.23 mins
+NoRating.fit <- fit.xgboost(DF.NoRating)
+NoRating.fit$tuned_object %>%
+  tune::show_best(metric = "rmse", n = 100)
+saveRDS(NoRating.fit, file = "../Models/NoRatingFit.RData")
+```
+
+# Create Semantic dataframes
+```{r}
+embeddings <- read_csv(file = "../Data/review_embed/review_embeddings_tconst.csv")
+embeddings<- embeddings %>% 
+  select(-...1,-...3) %>% 
+  na.omit()
+
+
+# Assuming your dataframe is called 'embeddings_df'
+# Remove the 'tconst' column as it likely doesn't contain embedding information
+embeddings_only <- embeddings %>%
+  select(-tconst)
+
+# Convert the dataframe to a matrix
+embeddings_matrix <- as.matrix(embeddings_only)
+
+# Perform PCA
+pca_result <- prcomp(embeddings_matrix, center = TRUE, scale. = TRUE)
+
+# Extract the first 60 principal components
+reduced_embeddings <- pca_result$x[, 1:60]
+
+# Add back the 'tconst' column
+reduced_embeddings_df <- cbind(tconst = embeddings$tconst, as.data.frame(reduced_embeddings))
+reduced_embeddings_df
+
+
+DF.Basic.Embeddings.PCA<- merge(x = DF.Basic, y = reduced_embeddings_df, by = "tconst")
+DF.NoRating.Embeddings <- DF.Basic.Embeddings.PCA %>%
+  select(-averageRating, -numVotes)
+```
+
+## Before running big parameter tune we try to fit one model, to estimate time:
+```{r}
+fit.xgboost.1fit <- function(input_data){
+
+  set.seed(777)
+  # split data into training and test
+  split <- function(input_data){
+    sample <- sample(c(TRUE, FALSE), nrow(input_data), replace=TRUE, prob=c(0.8,0.2))
+    train  <- input_data[sample, ]
+    test   <- input_data[!sample, ]
+    return(list(Training = train, Testing = test))
+  }
+  data.split <- split(input_data)
+  
+  # Create crossvalidation folds:
+  myRecipe<- recipes::recipe(total_revenue ~ ., data=data.split$Training) %>% 
+    recipes::step_rm(tconst) %>%
+    prep()
+  
+  proc_TrainSet <- myRecipe %>% bake(data.split$Training)
+  cvFolds <- data.split$Training %>% 
+    bake(myRecipe, new_data = .) %>%
+    rsample::vfold_cv(v = 5)
+  
+  # Define model:
+  xgmodel <-parsnip::boost_tree(
+    mode = "regression",
+    trees = 1000, #nrounds
+    learn_rate = tune(), #eta
+    sample_size = tune(), #subsample
+    mtry = tune(), #colsample_bytree
+    min_n = tune(), #min_child_weight
+    tree_depth = tune() #max_depth
+    ) %>%
+    set_engine("xgboost", objective = "reg:squarederror",
+               lambda=0, alpha=1,verbose=2)
+  
+  # Define parameter distributions
+  xgboostParams <- dials::parameters(
+    min_n(),
+    tree_depth(),
+    learn_rate(c(-3, -1)),
+    finalize(mtry(),select(data.split$Training,-total_revenue)),
+    sample_size = sample_prop(c(0.4, 0.9))
+  )
+  
+  # Create a grid of parameter combinations to fit through:
+  xgGrid <- dials::grid_max_entropy(xgboostParams, size = 5)
+  
+  # Create a workflow of how to fit the model
+  xgWorkflow <- workflows::workflow() %>%
+    add_model(xgmodel) %>% 
+    add_formula(total_revenue ~ .)
+  
+  # Fit and crossvalidate all models:
+  xgTuned <- tune_grid(
+    object = xgWorkflow,
+    resamples = cvFolds,
+    grid      = xgGrid,
+    metrics   = metric_set(rmse, rsq, rsq_trad, mae, mpe, mape, smape, mase, ccc),
+    control   = control_grid(verbose = TRUE))
+  xgTuned %>% tune::show_best(metric = "rmse")
+  return_object <- list(data = data.split, tuned_object = xgTuned)
+}
+```
+
+## Fit 100 basic semantic:
+```{r}
+# 1.02 Hours
+t1_big <- Sys.time()
+Basic.fit.embedding.PCA <- fit.xgboost(DF.Basic.Embeddings.PCA)
+Basic.fit.embedding.PCA$tuned_object %>%
+  tune::show_best(metric = "rmse",n = 10)
+t2_big <- Sys.time()
+time.taken_big<- round(t2_big-t1_big,2)
+saveRDS(Basic.fit.embedding.PCA, file = "../Models/BasicFit_PCA.RData")
+```
+
+
+
+## Fit 100 basic semantic:
+```{r}
+t1_big <- Sys.time()
+NoRating.fit.embedding.PCA <- fit.xgboost(DF.NoRating.Embeddings)
+NoRating.fit.embedding.PCA$tuned_object %>%
+  tune::show_best(metric = "rmse",n = 100)
+t2_big <- Sys.time()
+time.taken_big<- round(t2_big-t1_big,2)
+saveRDS(NoRating.fit.embedding.PCA, file = "../Models/NoRatingFit_PCA.RData")
+```
+
+
+```{r}
+Basic <- read_rds(file = "../Models/BasicFit.RData")
+BasicPCA <- read_rds(file = "../Models/BasicFit_PCA.RData")
+NoRating <- read_rds(file = "../Models/NoRatingFit.RData")
+NoRatingPCA<- read_rds(file = "../Models/NoRatingFit_PCA.RData")
+```
+```{r}
+Basic$tuned_object %>% tune::show_best()
+```
+
+
+# Fitting a best model on new data
+```{r}
+best.fit <- NoRating
+best_param <- best.fit$tuned_object %>% tune::select_best()
+
+# Split the data into training and testing sets
+set.seed(123) # for reproducibility
+data_train <- best.fit$data$Training %>% 
+  select(-tconst)
+data_test <- best.fit$data$Testing %>% 
+  select(-tconst) %>% 
+  na.omit()
+
+# Define the XGBoost model
+xgb_model <- boost_tree(
+  mode = "regression",
+  trees = 1000, # Number of trees
+  tree_depth = best_param$tree_depth, # Maximum depth of trees
+  learn_rate = best_param$learn_rate, # Learning rate
+  min_n = best_param$min_n, # Minimum number of observations in each terminal node
+  sample_size = best_param$sample_size, #subsample
+  mtry = best_param$mtry 
+) %>%
+  set_engine("xgboost", objective = "reg:squarederror", lambda=0, alpha=1,verbose=0)
+
+# Define the workflow
+xgb_wf <- workflow() %>%
+  add_model(xgb_model) %>%
+  add_formula(total_revenue ~ .)
+
+# Fit the model
+fitted_model <- fit(xgb_wf, data_train)
+
+# Fit the model
+fitted_model %>%   extract_fit_parsnip() %>% 
+  vip(num_features = 10)
+
+# Make predictions on the test data
+predictions <- predict(fitted_model, new_data = data_test)
+
+mean(sqrt((data_test$total_revenue-predictions$.pred)^2))
+```
+Basic RMSE: 38781.88
+NoRating RMSE: 38940.46
+
+BasicPCA RMSE: 31280.52 
+NoRatingPCA RMSE: 42261.3
+
+L: 337
+
+
+
+
+
+# Fitting a best model on new data
+```{r}
+best.fit <- BasicPCA
+
+
+# Split the data into training and testing sets
+set.seed(123) # for reproducibility
+data_train <- best.fit$data$Training %>% 
+  select(-tconst) %>% 
+  select(-averageRating, -numVotes)
+data_test <- best.fit$data$Testing %>% 
+  select(-tconst) %>% 
+  select(-averageRating, -numVotes) %>% 
+  na.omit()
+
+# Define the XGBoost model
+xgb_model <- boost_tree(
+  mode = "regression",
+  trees = 1000, # Number of trees
+  tree_depth = 15, # Maximum depth of trees
+  learn_rate = 0.093532537, # Learning rate
+  min_n = 2, # Minimum number of observations in each terminal node
+  sample_size = 0.5505297, #subsample
+  mtry = 32 
+) %>%
+  set_engine("xgboost", objective = "reg:squarederror", lambda=0, alpha=1,verbose=0)
+
+# Define the workflow
+xgb_wf <- workflow() %>%
+  add_model(xgb_model) %>%
+  add_formula(total_revenue ~ .) 
+
+# Fit the model
+fitted_model <- fit(xgb_wf, data_train)
+fitted_model %>%   extract_fit_parsnip() %>% 
+  vip(num_features = 10)
+
+# Make predictions on the test data
+predictions <- predict(fitted_model, new_data = data_test)
+
+mean(sqrt((data_test$total_revenue-predictions$.pred)^2))
+```
+```{r}
+sqrt(data_test$total_revenue-mean(data_test$total_revenue))^2/length(data_test$total_revenue)
+
+
+```
+

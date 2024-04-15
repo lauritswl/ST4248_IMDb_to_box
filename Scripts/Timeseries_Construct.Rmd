@@ -1,0 +1,77 @@
+## Time-Series Input
+```{r}
+pacman::p_load(lubridate, tidyverse)
+raw.timeseries <- read_csv(file = "../Data/revenues_per_day_with_duplicate_tID.csv") %>% 
+  select(title, date, revenue, tconst) %>%
+  filter(tconst %in% DF.BoxOffice$tconst)
+str(raw.timeseries)
+
+day.timeseries <- raw.timeseries %>% 
+  group_by(date) %>% 
+  summarise(revenue = sum(revenue))
+day.timeseries
+
+merge.day.timeseries <- day.timeseries %>% 
+  mutate(
+    lag1 = lag(revenue ,n = 1),
+    lag2 = lag(revenue ,n = 2),
+    lag3 = lag(revenue ,n = 3),
+    lag4 = lag(revenue ,n = 4),
+    lag5 = lag(revenue ,n = 5),
+    lag6 = lag(revenue ,n = 6),
+    lag7 = lag(revenue ,n = 7),
+    ylag1 = lag(revenue ,n = 1+365),
+    ylag2 = lag(revenue ,n = 2+365),
+    ylag3 = lag(revenue ,n = 3+365),
+    ylag4 = lag(revenue ,n = 4+365),
+    ylag5 = lag(revenue ,n = 5+365),
+    ylag6 = lag(revenue ,n = 6+365),
+    ylag7 = lag(revenue ,n = 7+365)) %>% select(-revenue)
+    
+day.timeseries <- day.timeseries %>% 
+  mutate(year_month = format(date, "%Y-%m"))
+
+month.timeseries <- day.timeseries %>% 
+  group_by(year_month) %>%
+  summarise(revenue = sum(revenue))
+merge.month.timeseries <- month.timeseries %>% 
+  mutate(
+    lag1month = lag(revenue ,n = 1),
+    lag2month = lag(revenue ,n = 2),
+    lag3month = lag(revenue ,n = 3),
+    lag12month = lag(revenue ,n = 12)) %>% 
+  select(-revenue)
+merge.month.timeseries 
+
+
+    
+day.timeseries <- day.timeseries %>% 
+  mutate(year = year(date))
+
+year.timeseries <- day.timeseries %>% 
+  group_by(year) %>%
+  summarise(revenue = sum(revenue))
+
+merge.year.timeseries <- year.timeseries %>% 
+   mutate(
+    lag1year = lag(revenue ,n = 1)) %>% 
+  select(-revenue)
+
+
+merge.all <- merge(
+    merge(
+      merge(day.timeseries, merge.day.timeseries, by = "date"),
+      merge.month.timeseries,
+      by = "year_month"),
+    merge.year.timeseries,
+    by = "year"
+  ) 
+
+merge.all.timeseries <- merge.all %>% 
+  select(c(colnames(merge.all)[3:10],colnames(merge.all)[19:23]))
+```
+# Save DF
+```{r}
+write.csv(merge.all.timeseries, file = "../Data/Timeseries_Revenue.csv")
+```
+

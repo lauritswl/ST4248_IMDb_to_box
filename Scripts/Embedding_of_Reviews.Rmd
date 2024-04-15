@@ -1,0 +1,107 @@
+### Install libraries
+```{r}
+pacman::p_load(text, #Word embeddings
+               reticulate, #Run python in r
+               tidyverse # Life-upgrades
+               )
+
+```
+
+
+
+
+
+```{r}
+# This took 5 minutes: text::textEmbed(DF.Reviews$review_1[1:20], keep_token_embeddings = FALSE)
+# We expect 100 reviews to then take 25 minutes: lets test:
+
+
+# Save starting time
+T1 <- Sys.time()
+reviews.100 <- text::textEmbed(DF.Reviews$review_1[1:100], keep_token_embeddings = FALSE)
+# Save stoping time
+T2 <- Sys.time()
+
+# Compute time taken to run above function
+T2-T1
+reviews.100
+```
+
+```{r}
+# Save starting time
+T1 <- Sys.time()
+reviews.101.to.300 <- text::textEmbed(DF.Reviews$review_1[101:300], keep_token_embeddings = FALSE)
+# Save stoping time
+T2 <- Sys.time()
+T2-T1
+```
+```{r}
+# Save starting time
+T1 <- Sys.time()
+reviews.301.to.500 <- text::textEmbed(DF.Reviews$review_1[301:500], keep_token_embeddings = FALSE)
+# Save stoping time
+T2 <- Sys.time()
+T2-T1
+```
+
+```{r}
+rev500 <- rbind(
+rbind(reviews.100$texts$texts, reviews.101.to.300$texts$texts),
+reviews.301.to.500$texts$texts
+)
+
+write.csv(rev500, file = "./Data/review_embed/rev500.csv")
+```
+
+```{r}
+rev1000 <- text::textEmbed(DF.Reviews$review_1[501:1000], keep_token_embeddings = FALSE)
+write.csv(rev1000$texts$texts, file = "./Data/review_embed/rev1000.csv")
+```
+
+
+```{r}
+rev1500 <- text::textEmbed(DF.Reviews$review_1[1001:1500], keep_token_embeddings = FALSE)
+write.csv(rev1500$texts$texts, file = "./Data/review_embed/rev1500.csv")
+```
+
+```{r}
+rev2000 <- text::textEmbed(DF.Reviews$review_1[1501:1995], keep_token_embeddings = FALSE)
+write.csv(rev2000$texts$texts, file = "./Data/review_embed/rev2000.csv")
+```
+
+
+
+
+
+
+
+```{r}
+t_text <- DF.Reviews[1:5,] %>% 
+  select(-1, -3) %>% 
+  tidyr::pivot_longer(-1) %>%
+  tidyr::pivot_wider(names_from = 1, values_from = value)
+
+flipped_embedings <- text::textEmbed(texts = t_text, keep_token_embeddings = FALSE,)
+```
+
+## Rejoin sub-dataframes into one
+```{r}
+DF.2000Embeddings<- rbind(
+  rev500,
+  rev1000$texts$texts,
+  rev1500$texts$texts,
+  rev2000$texts$texts
+)
+DF.2000Embeddings <- cbind(select(.data = DF.Merge, tconst), embeddings)
+DF.2000Embeddings <- cbind(select(DF.Reviews,tconst),DF.2000Embeddings)
+write.csv(x= DF.2000Embeddings, file = "../Data/review_embed/review_embeddings_tconst.csv")
+```
+
+
+
+
+
+
+
+
+

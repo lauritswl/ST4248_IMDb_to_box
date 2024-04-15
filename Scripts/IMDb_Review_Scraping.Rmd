@@ -1,0 +1,90 @@
+
+# Web scraping of reviews:
+## Packages needed
+```{r}
+pacman::p_load(tidyverse ,rvest)
+```
+
+## Load IMDb names from meta-data csv
+```{r}
+DF.Merge <- read_csv(file = "../Data/meta_moviedata.csv")
+
+movies_link  <-  data.frame(
+  'tconst' = DF.Merge$tconst, 
+  'link' = paste0("https://www.imdb.com/title/", DF.Merge$tconst ,"/reviews?ref_=tt_urv")
+  )
+```
+
+
+## Cleaning of text strings
+```{r}
+name_cleaner <- function(x){
+  x <- x %>%
+    str_replace(pattern = "\n", replacement = "") %>%
+    str_squish() %>%
+    str_trim()  %>% 
+    str_replace(pattern = "\\\\", replacement = "") %>%
+    str_replace(pattern = " Permalink", replacement = "") %>% 
+      str_replace(pattern = "\\d+ out of \\d+ found this helpful. Was this review helpful\\? Sign in to vote.", replacement =  "") %>% 
+    str_replace(pattern = "\\d+/10 ",replacement = "") %>%
+    str_replace(pattern = "\\b(\\S+) \\b[A-Z][a-z]+ \\d{4}\\b ", replacement = "") #Remove "username month date"
+    }
+```
+
+## Prepare a dataframe for data
+```{r}
+add_empty_rows <- function(df, num_rows) {
+  for (i in 1:num_rows) {
+    df[nrow(df) + 1, ] <- NA
+  }
+  return(df)
+}
+for (i in 1:25) {
+  movies_link[, paste0("review_", i)] = NA
+}
+
+```
+
+
+## Begin scraping, may need to be started multiple times to avoid timeouts
+```{r}
+# If error set when scraping broke, and start here again:
+start_ <- 1
+
+for (row in start_:length(movies_link[,1])){
+  print(paste0("Has scraped ", row, " out of ", length(movies_link[,1]), " movies: ", round((row)/length(movies_link[,1])*100, digits = 2), "%"))
+  movie_url <- rvest::read_html(movies_link$link[row])
+  review_string<- rvest::html_nodes(movie_url,".lister-item-content") %>%
+    rvest::html_text()
+  movies_link[row, 3:27] <- name_cleaner(review_string)[1:25]
+}
+
+```
+# Check missing reviews:
+```{r}
+test_of_scraping <- movies_link
+
+missing_reviews <- c()
+for (index in 1:25){
+  missing_reviews <- c(missing_reviews, 
+                       test_of_scraping %>%
+                         filter(is.na(test_of_scraping[paste0('review_', index)])) %>%
+                         count() %>% 
+                         as.integer()
+                       )}
+
+DF.NA.Reviews <- tibble('Missing_Reviews' = 25:1,
+           'Number_of_movies' = missing_reviews)
+
+ggplot(DF.NA.Reviews, aes(x = Missing_Reviews, y = Number_of_movies)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Missing Reviews", y = "Number of Movies", title = "Number of Movies vs Missing Reviews")
+```
+
+
+# Save dataframe outside of memory
+```{r}
+write.csv(movies_link, file = "../Data/movie_reviews.csv")
+```
+
